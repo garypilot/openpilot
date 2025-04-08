@@ -85,25 +85,82 @@ def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
 def get_stopped_equivalence_factor_krkeegen(v_lead, v_ego):
-  v_diff_offset = 0
-  v_diff_offset_max = 12
-  speed_to_reach_max_v_diff_offset = 26 * CV.KPH_TO_MS  # in m/s
-  delta_speed = v_lead - v_ego
+  # Constants (these can be tuned further with testing)
+  v_diff_offset_max = 8  # Max additional stopping distance
+  speed_to_reach_max_v_diff_offset = 26 * CV.KPH_TO_MS  # Speed where offset fully scales down
+  instant_response_factor = 1.7  # Acceleration response factor
+  min_instant_response = 2  # Minimum response distance
+  exp_decay_factor = 2.5  # Controls exponential decay rate
 
-  if np.any(delta_speed > 0):
-    # Softer v_diff_offset increase
-    v_diff_offset = np.clip(delta_speed * 1.1, 0, v_diff_offset_max)
-    scaling_factor = np.clip((speed_to_reach_max_v_diff_offset - v_ego) / speed_to_reach_max_v_diff_offset, 0, 1)
-    smooth_scaling = scaling_factor ** 2.5 * (10 - 9 * scaling_factor)
+  # Hysteresis parameters
+  hysteresis_band = 0.5  # Speed difference deadband to prevent oscillations
 
-    # Apply an additional softening effect for speeds below 5.6 m/s (20 kph)
-    if v_ego < 5.6:
-      low_speed_factor = np.clip(v_ego / 5.6, 0.5, 1)  # Reduces impact at very low speeds
-      v_diff_offset *= low_speed_factor * 0.8  # Further softens low-speed braking
+  # Ensure array shapes match - handle broadcasting appropriately
+  v_lead = np.asarray(v_lead)
+  v_ego = np.asarray(v_ego)
 
-    v_diff_offset *= smooth_scaling
+  # Broadcasting to match shapes if needed
+  if v_lead.shape != v_ego.shape:
+    if v_lead.size == 1:
+      v_lead = np.full_like(v_ego, v_lead.item())
+    elif v_ego.size == 1:
+      v_ego = np.full_like(v_lead, v_ego.item())
+    else:
+      # If shapes don't match and neither is scalar, we have a real problem
+      raise ValueError(f"Shape mismatch: v_lead {v_lead.shape} vs v_ego {v_ego.shape}")
 
-  stopping_distance = (v_lead ** 2) / (2 * COMFORT_BRAKE) + v_diff_offset + 0.5  # Small buffer for a softer stop
+  # Speed difference with hysteresis
+  delta_speed = v_lead - v_ego  # Raw speed difference
+
+  # Apply hysteresis to prevent oscillations when speeds are very close
+  delta_speed_with_hysteresis = np.where(
+    np.abs(delta_speed) < hysteresis_band,
+    np.sign(delta_speed) * hysteresis_band * (np.abs(delta_speed) / hysteresis_band) ** 2,
+    delta_speed
+  )
+
+  # Initialize offset array
+  v_diff_offset = np.zeros_like(delta_speed)
+
+  # Process the entire arrays without masking
+  lead_faster = delta_speed_with_hysteresis > 0
+  lead_slower = delta_speed_with_hysteresis < -hysteresis_band
+
+  # Handle lead faster case
+  if np.any(lead_faster):
+    # Calculate for all values first
+    instant_response = np.clip(
+      delta_speed_with_hysteresis * instant_response_factor,
+      min_instant_response,
+      v_diff_offset_max
+    )
+
+    scaling_factor = np.clip(
+      (speed_to_reach_max_v_diff_offset - v_ego) / speed_to_reach_max_v_diff_offset,
+      0, 1
+    )
+    smooth_scaling = (1 - np.exp(-exp_decay_factor * scaling_factor))
+
+    # Then apply only where lead is faster
+    v_diff_offset = np.where(lead_faster, instant_response * smooth_scaling, v_diff_offset)
+
+  # Handle lead slower case
+  if np.any(lead_slower):
+    deceleration_factor = 0.35
+    slower_offset = np.clip(
+      delta_speed_with_hysteresis * deceleration_factor,
+      -2.0,
+      0
+    )
+    v_diff_offset = np.where(lead_slower, slower_offset, v_diff_offset)
+
+  # Final stopping distance calculation with enhanced robustness
+  epsilon = 1e-6
+  stopping_distance = (v_lead ** 2) / (2 * (COMFORT_BRAKE + epsilon)) + v_diff_offset
+
+  # Return same type as input
+  if np.isscalar(v_lead) and np.isscalar(v_ego):
+    return stopping_distance.item() if stopping_distance.size == 1 else stopping_distance
   return stopping_distance
 
 def get_safe_obstacle_distance(v_ego, t_follow):
