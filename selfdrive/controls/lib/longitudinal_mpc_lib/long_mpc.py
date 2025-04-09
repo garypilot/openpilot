@@ -86,11 +86,11 @@ def get_stopped_equivalence_factor(v_lead):
 
 def get_stopped_equivalence_factor_krkeegen(v_lead, v_ego):
   # Constants (these can be tuned further with testing)
-  v_diff_offset_max = 8  # Max additional stopping distance
+  v_diff_offset_max = 6.5  # Max additional stopping distance
   speed_to_reach_max_v_diff_offset = 26 * CV.KPH_TO_MS  # Speed where offset fully scales down
   instant_response_factor = 1.7  # Acceleration response factor
   min_instant_response = 2  # Minimum response distance
-  exp_decay_factor = 2.5  # Controls exponential decay rate
+  exp_decay_factor = 4.0  # Controls exponential decay rate
 
   # Hysteresis parameters
   hysteresis_band = 0.5  # Speed difference deadband to prevent oscillations
@@ -149,7 +149,7 @@ def get_stopped_equivalence_factor_krkeegen(v_lead, v_ego):
     deceleration_factor = 0.35
     slower_offset = np.clip(
       delta_speed_with_hysteresis * deceleration_factor,
-      -2.0,
+      -3.0,
       0
     )
     v_diff_offset = np.where(lead_slower, slower_offset, v_diff_offset)
